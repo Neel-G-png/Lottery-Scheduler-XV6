@@ -1,0 +1,81 @@
+Q1) Case ‘ ’:
+
+            case ' ':
+                ecmd = (struct execcmd*)cmd;
+                if(ecmd->argv[0] == 0)
+                exit(0);
+                execvp(ecmd->argv[0], ecmd->argv);
+                break;
+
+The exec variant we used for our execution was the following:
+
+int execvp(const char *file, char *const argv[]);
+
+Exec is a function that replaces the current process image with a new image.
+We chose this particular variant because in execvp, if the program name does not contain a slash character, execvp() searches for the program in the directories listed in the PATH variable. Here, we are passing it argv[0] as the path name which is the first argument in the command we pass through the terminal. Argv[0] which is the first part of the command will not contain the slash character, we only type in the command, which is why execvp works best.
+
+
+
+Q2) I/O Redirection
+Our Approach:
+            case '>':
+            case '<':
+                rcmd = (struct redircmd*)cmd;
+                close(rcmd->fd); // rcmd->fd can either be 0 or 1 based on < or >
+                int perm;
+                if (cmd->type == '<'){
+                perm = 0440;
+                }
+                else{
+                perm = 0760;
+                }
+                int fd = open(rcmd->file,rcmd->mode,perm);
+                if (fd < 0){
+                fprintf(stderr, "Could not open %s\n",rcmd->file);
+                exit(1);
+                }
+                runcmd(rcmd->cmd);
+                break;
+
+For the I/O direction, we used the open system call. Open function uses 3 arguments, one is the file, the mode, and a flag that states the permissions of the file created. Syntax from the manual is as follows:
+
+int open(const char *pathname, int flags, mode_t mode);
+
+While creating the file, we faced issues with the file permissions that came with the opening and handling of new files, stating bad user permissions. Hence we added the permission set, "0760" for ‘>’, which is read and write permission for files that should be private to the owner and accessible to users in the same group + execute permission for owner, “0440” for ‘<’, which is Read permission for owner and group. It restricts access to others, ensuring that they have no permission to interact with the file.
+For execution, we first close the rcmd->fd which is 0 for ‘<’ and 1 for ‘>’. When we close this fd and open the file provided, by default the lowest file descriptor that is available is assigned to that file. Hence when ‘<’ is used, instead of the reading from the stdin, the command gets its input from the file that was given, and similarly when ‘>’ is used, it closes stdout, and the when file is opened, that fd is assigned to the file. 
+
+
+Q3) For the pipe command:
+
+Our Code:
+            case '|':
+                pcmd = (struct pipecmd*)cmd;
+                if(pipe(p)<0){
+                fprintf(stderr, "Pipe Failure : Failed to initialize pipe\n" );
+                }
+                if(fork1() == 0){
+                close(p[0]); // closes so that first command doesnt not print anything in the terminal and instead send the output to the write end
+                dup2(p[1],STDOUT_FILENO);
+                runcmd(pcmd->left);
+                close(p[0]);
+                close(p[1]);
+                exit(0);
+                }
+                if(fork1() == 0){
+                close(p[1]); // closing so that second command doesnt take any input from the terminal and takes input from read end
+                dup2(p[0], STDIN_FILENO);
+                runcmd(pcmd->right);
+                close(p[0]);
+                close(p[1]);
+                exit(0);
+                }
+                close(p[0]);
+                close(p[1]);
+                wait(0);
+                wait(0);
+                break;
+
+
+In the case of pipe:
+We studied the use of file descriptors and forks when calling the pipe command. Usually file descriptors 0, 1, and 2 are reserved for STDIN, STDOUT and STDERR respectively to be written/taken to/from the Terminal. When using a pipe, we need to send the output of the read end to the write end instead of the terminal. This particular action would be carried out by the dup2() function. It duplicates the given fd to the given fd2 while closing the fd2 simultaneously. In the parent (shell) process, we first create a pipe that stores read and write ends file descriptors to p[0] and p[1]. The parent calls fork twice and since the memory is shared between parent and child, p[0] and p[1] are known to the child process as well. 
+The first child doesn’t need to the read end of the pipe, so that is closed. Then we need to write the output of the first child to the write end instead of stdout, this is where we use dup2 and close off both ends before and after executing the command. Similarly, we need to close the write end of the pipe for the second child, duplicate the file descriptor of read end to stdin, and close both ends before executing the command. In the end, the parent needs to wait for both the children to exit before exiting itself so that the child processes are harvested properly.
